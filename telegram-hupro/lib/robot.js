@@ -327,7 +327,7 @@ class Robot extends EventEmitter {
         this.parseHelp(full);
         this.logger.info(`  ✅ ${filename}`);
       } else {
-        this.logger.warning(`Expected ${full} to export a function, got ${typeof script}`);
+        this.logger.warn(`Expected ${full} to export a function, got ${typeof script}`);
       }
     } catch (error) {
       this.logger.error(`  ❌ ${filename}: ${error.message}`);
@@ -340,7 +340,7 @@ class Robot extends EventEmitter {
     this.logger.info(`📦 Loading scripts from ${scriptsPath}`);
     
     if (!fs.existsSync(scriptsPath)) {
-      this.logger.warning(`Scripts path does not exist: ${scriptsPath}`);
+      this.logger.warn(`Scripts path does not exist: ${scriptsPath}`);
       return;
     }
     
@@ -451,7 +451,7 @@ class Robot extends EventEmitter {
       this.logger.info(`🤖 Hubot v${this.version}`);
     } catch (error) {
       this.version = '1.0.0';
-      this.logger.warning('Could not read version from package.json');
+      this.logger.warn('Could not read version from package.json');
     }
   }
 
