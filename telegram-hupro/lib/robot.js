@@ -15,8 +15,13 @@ class Robot extends EventEmitter {
     this.name = name || 'Hubot';
     this.alias = alias;
     this.events = new EventEmitter();
+    
+    // ✅ إنشاء logger أولاً قبل أي شيء
+    this.logger = new Log(process.env.HUBOT_LOG_LEVEL || 'info');
+    
+    // ✅ ثم Brain (بدون تحميل فوري)
     this.brain = new Brain(this);
-    this.adapter = null;
+    
     this.Response = Response;
     this.commands = [];
     this.listeners = [];
@@ -25,7 +30,6 @@ class Robot extends EventEmitter {
       response: new Middleware(this),
       receive: new Middleware(this)
     };
-    this.logger = new Log(process.env.HUBOT_LOG_LEVEL || 'info');
     this.pingIntervalId = null;
     this.globalHttpOptions = {};
     
@@ -37,6 +41,9 @@ class Robot extends EventEmitter {
     
     this.setupNullAdapter();
     this.loadAdapter(adapterPath, adapter);
+    
+    // ✅ تهيئة Brain بعد تجهيز كل شيء
+    this.brain.init();
   }
 
   // إعداد Express للـ HTTP endpoints
@@ -54,7 +61,32 @@ class Robot extends EventEmitter {
       this.logger.info(`🌐 HTTP Server listening on ${host}:${port}`);
     });
     
-    this.router.get('/hubot/ping', (req, res) => res.send('PONG'));
+    // Health check endpoint
+    this.router.get('/', (req, res) => {
+      res.json({
+        status: 'ok',
+        name: this.name,
+        version: this.version,
+        uptime: process.uptime()
+      });
+    });
+    
+    this.router.get('/hubot/ping', (req, res) => {
+      res.send('PONG');
+    });
+    
+    // Status endpoint
+    this.router.get('/hubot/status', (req, res) => {
+      const users = Object.keys(this.brain.users()).length;
+      res.json({
+        name: this.name,
+        version: this.version,
+        uptime: process.uptime(),
+        users: users,
+        listeners: this.listeners.length,
+        memory: process.memoryUsage()
+      });
+    });
   }
 
   // تحميل المحول (Adapter)
@@ -64,25 +96,41 @@ class Robot extends EventEmitter {
     try {
       const AdapterClass = require(adapterPath);
       this.adapter = new AdapterClass(this);
+      this.adapterName = adapter;
     } catch (err) {
-      this.logger.error(`Cannot load adapter ${adapter}: ${err}`);
+      this.logger.error(`Cannot load adapter ${adapter}: ${err.message}`);
+      this.logger.error(err.stack);
       process.exit(1);
     }
   }
 
   // محول افتراضي
   setupNullAdapter() {
-    this.on('error', (err) => {
+    this.on('error', (err, res) => {
       this.logger.error(err.stack || err.toString());
+      
+      if (res && res.message && res.message.user) {
+        this.logger.error(`Error happened for user: ${res.message.user.name}`);
+      }
     });
   }
 
   // نظام الاستماع الكامل
   hear(regex, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    
     return this.listen(this.createMatcher(regex), options, callback);
   }
 
   respond(regex, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    
     const matcher = this.createMatcher(regex);
     
     return this.listen((message) => {
@@ -91,14 +139,21 @@ class Robot extends EventEmitter {
         const robotAlias = this.alias;
         
         // التحقق من ذكر اسم البوت
-        const regex = new RegExp(
-          `^[@]?${robotName}[:,]?\\s+|^${robotName}[:,]?\\s+` +
-          (robotAlias ? `|^[@]?${robotAlias}[:,]?\\s+` : ''),
-          'i'
-        );
+        let mentionRegex;
+        if (robotAlias) {
+          mentionRegex = new RegExp(
+            `^[@]?${robotName}[:,]?\\s+|^${robotName}[:,]?\\s+|^[@]?${robotAlias}[:,]?\\s+|^${robotAlias}[:,]?\\s+`,
+            'i'
+          );
+        } else {
+          mentionRegex = new RegExp(
+            `^[@]?${robotName}[:,]?\\s+|^${robotName}[:,]?\\s+`,
+            'i'
+          );
+        }
         
-        if (regex.test(message.text)) {
-          message.text = message.text.replace(regex, '').trim();
+        if (mentionRegex.test(message.text)) {
+          message.text = message.text.replace(mentionRegex, '').trim();
           return matcher(message);
         }
       }
@@ -107,6 +162,11 @@ class Robot extends EventEmitter {
   }
 
   enter(options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    
     return this.listen(
       (msg) => msg instanceof EnterMessage,
       options,
@@ -115,6 +175,11 @@ class Robot extends EventEmitter {
   }
 
   leave(options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    
     return this.listen(
       (msg) => msg instanceof LeaveMessage,
       options,
@@ -123,6 +188,11 @@ class Robot extends EventEmitter {
   }
 
   topic(options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    
     return this.listen(
       (msg) => msg instanceof TopicMessage,
       options,
@@ -145,6 +215,10 @@ class Robot extends EventEmitter {
       callback = options;
       options = {};
     }
+    
+    if (!callback) {
+      throw new Error('Callback is required for listener');
+    }
 
     const listener = new Listener(this, matcher, options, callback);
     this.listeners.push(listener);
@@ -166,26 +240,34 @@ class Robot extends EventEmitter {
       done = () => {};
     }
 
-    this.middleware.receive.execute({ response: new Response(this, message) }, (context, middlewareDone) => {
-      this.processListeners(context.response.message, (listenerError) => {
-        middlewareDone(listenerError);
-        done(listenerError);
-      });
-    }, (error) => {
-      this.emit('error', error, new Response(this, message));
-      done(error);
-    });
+    this.middleware.receive.execute(
+      { response: new Response(this, message) }, 
+      (context, middlewareDone) => {
+        this.processListeners(context.response.message, (listenerError) => {
+          middlewareDone(listenerError);
+          done(listenerError);
+        });
+      }, 
+      (error) => {
+        this.emit('error', error, new Response(this, message));
+        done(error);
+      }
+    );
   }
 
   // معالجة المستمعات
   processListeners(message, done) {
+    if (message.done) {
+      return done();
+    }
+    
     let anyListenersExecuted = false;
     const listenerMiddleware = this.middleware.listener;
 
     const listenerExecutionLoop = (index) => {
       if (index >= this.listeners.length) {
         if (!anyListenersExecuted) {
-          this.logger.debug('No listeners executed');
+          this.logger.debug('No listeners executed for message');
         }
         return done();
       }
@@ -201,8 +283,14 @@ class Robot extends EventEmitter {
           listenerMiddleware.execute(
             { listener, response },
             (context, middlewareDone) => {
-              listener.callback(context.response);
-              middlewareDone();
+              try {
+                listener.callback(context.response);
+                middlewareDone();
+              } catch (err) {
+                this.logger.error(`Error in listener callback: ${err.message}`);
+                this.emit('error', err, context.response);
+                middlewareDone(err);
+              }
             },
             (err) => {
               if (err) {
@@ -215,6 +303,7 @@ class Robot extends EventEmitter {
           listenerExecutionLoop(index + 1);
         }
       } catch (err) {
+        this.logger.error(`Error matching listener: ${err.message}`);
         this.emit('error', err, new Response(this, message));
         listenerExecutionLoop(index + 1);
       }
@@ -228,100 +317,169 @@ class Robot extends EventEmitter {
     const full = path.join(filepath, filename);
     
     try {
+      // حذف من الكاش للسماح بإعادة التحميل
+      delete require.cache[require.resolve(full)];
+      
       const script = require(full);
       
       if (typeof script === 'function') {
         script(this);
         this.parseHelp(full);
+        this.logger.info(`  ✅ ${filename}`);
       } else {
         this.logger.warning(`Expected ${full} to export a function, got ${typeof script}`);
       }
     } catch (error) {
-      this.logger.error(`Unable to load ${full}: ${error.stack}`);
-      process.exit(1);
+      this.logger.error(`  ❌ ${filename}: ${error.message}`);
+      this.logger.error(error.stack);
     }
   }
 
   // تحميل سكربتات
-  load(path) {
-    this.logger.debug(`Loading scripts from ${path}`);
+  load(scriptsPath) {
+    this.logger.info(`📦 Loading scripts from ${scriptsPath}`);
     
-    if (fs.existsSync(path)) {
-      const files = fs.readdirSync(path).sort();
+    if (!fs.existsSync(scriptsPath)) {
+      this.logger.warning(`Scripts path does not exist: ${scriptsPath}`);
+      return;
+    }
+    
+    try {
+      const files = fs.readdirSync(scriptsPath).sort();
       
       files.forEach((file) => {
-        if (file.match(/\.(js|mjs|coffee|litcoffee)$/)) {
-          this.loadFile(path, file);
+        if (file.match(/\.(js|mjs)$/)) {
+          this.loadFile(scriptsPath, file);
         }
       });
+    } catch (error) {
+      this.logger.error(`Error loading scripts: ${error.message}`);
     }
   }
 
   // تحليل وثائق المساعدة
   parseHelp(filepath) {
-    const body = fs.readFileSync(filepath, 'utf-8');
-    const scriptName = path.basename(filepath);
-    const lines = body.split('\n');
-    
-    lines.forEach((line) => {
-      if (line.match(/^#\s+hubot/i) || line.match(/^#\s+@?bot/i)) {
-        if (!this.commands.includes(line)) {
-          this.commands.push(line.substring(2).trim());
+    try {
+      const body = fs.readFileSync(filepath, 'utf-8');
+      const scriptName = path.basename(filepath);
+      const lines = body.split('\n');
+      
+      lines.forEach((line) => {
+        const cleanLine = line.trim();
+        
+        // البحث عن تعليقات المساعدة
+        if (cleanLine.match(/^\/\/\s*hubot/i) || 
+            cleanLine.match(/^#\s*hubot/i) ||
+            cleanLine.match(/^\/\/\s*Commands:/i)) {
+          
+          const helpText = cleanLine.replace(/^\/\/\s*/, '').replace(/^#\s*/, '').trim();
+          
+          if (helpText && !this.commands.includes(helpText)) {
+            this.commands.push(helpText);
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      this.logger.debug(`Could not parse help from ${filepath}`);
+    }
   }
 
   // تشغيل البوت
   run() {
     this.emit('running');
-    this.adapter.run();
+    
+    if (this.adapter && typeof this.adapter.run === 'function') {
+      this.adapter.run();
+    } else {
+      this.logger.error('Adapter does not have a run method');
+      process.exit(1);
+    }
   }
 
   // إيقاف البوت
   shutdown() {
+    this.logger.info('🛑 Shutting down...');
+    
     if (this.pingIntervalId != null) {
       clearInterval(this.pingIntervalId);
     }
     
-    this.adapter.close();
-    this.brain.close();
+    if (this.adapter && typeof this.adapter.close === 'function') {
+      this.adapter.close();
+    }
+    
+    if (this.brain) {
+      this.brain.close();
+    }
     
     if (this.server) {
-      this.server.close();
+      this.server.close(() => {
+        this.logger.info('HTTP server closed');
+      });
+    }
+    
+    this.emit('shutdown');
+  }
+
+  // إرسال رسائل
+  send(envelope, ...strings) {
+    if (this.adapter && typeof this.adapter.send === 'function') {
+      return this.adapter.send(envelope, ...strings);
+    } else {
+      this.logger.error('Adapter does not have a send method');
     }
   }
 
-  // إرسال رسالة
-  send(envelope, ...strings) {
-    return this.adapter.send(envelope, ...strings);
-  }
-
   reply(envelope, ...strings) {
-    return this.adapter.reply(envelope, ...strings);
+    if (this.adapter && typeof this.adapter.reply === 'function') {
+      return this.adapter.reply(envelope, ...strings);
+    } else {
+      this.logger.error('Adapter does not have a reply method');
+    }
   }
 
   messageRoom(room, ...strings) {
     const envelope = { room };
-    return this.adapter.send(envelope, ...strings);
+    return this.send(envelope, ...strings);
   }
 
   // الإصدار
   parseVersion() {
-    const pkg = require('../package.json');
-    this.version = pkg.version;
-    this.logger.info(`🤖 Hubot v${this.version}`);
+    try {
+      const pkg = require('../package.json');
+      this.version = pkg.version;
+      this.logger.info(`🤖 Hubot v${this.version}`);
+    } catch (error) {
+      this.version = '1.0.0';
+      this.logger.warning('Could not read version from package.json');
+    }
   }
 
   // HTTP Client
   http(url, options = {}) {
-    const httpClient = require('scoped-http-client').create(url, this.globalHttpOptions);
-    
-    Object.keys(options).forEach(key => {
-      httpClient[key](options[key]);
-    });
-    
-    return httpClient;
+    try {
+      const httpClient = require('scoped-http-client').create(url, this.globalHttpOptions);
+      
+      Object.keys(options).forEach(key => {
+        if (typeof httpClient[key] === 'function') {
+          httpClient[key](options[key]);
+        }
+      });
+      
+      return httpClient;
+    } catch (error) {
+      this.logger.error(`HTTP client error: ${error.message}`);
+      
+      // Fallback بسيط
+      return {
+        get: (callback) => {
+          const axios = require('axios');
+          axios.get(url, options)
+            .then(response => callback(null, response, response.data))
+            .catch(err => callback(err, null, null));
+        }
+      };
+    }
   }
 }
 
