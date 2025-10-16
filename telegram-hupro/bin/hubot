@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# تشغيل Hubot
+exec node index.js

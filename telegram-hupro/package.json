@@ -1,0 +1,26 @@
+{
+  "name": "telegram-hubot-professional",
+  "version": "1.0.0",
+  "description": "نظام Hubot الاحترافي الكامل لتيليجرام",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "redis": "^4.6.0",
+    "eventemitter3": "^5.0.1",
+    "log": "^6.3.1",
+    "scoped-http-client": "^0.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
