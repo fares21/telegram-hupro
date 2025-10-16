@@ -21,21 +21,34 @@ class Brain extends EventEmitter {
       fs.mkdirSync(dir, { recursive: true });
     }
     
-    this.load();
-    this.setupAutoSave();
+    // ⚠️ لا تستدعي load() هنا!
+    // سنستدعيها بعد تهيئة robot.logger
     
     this.robot.on('running', () => {
       this.emit('loaded', this.data);
     });
   }
 
+  // وظيفة التهيئة المتأخرة
+  init() {
+    this.load();
+    this.setupAutoSave();
+  }
+
   // حفظ البيانات
   save() {
     try {
       fs.writeFileSync(this.savePath, JSON.stringify(this.data, null, 2));
-      this.robot.logger.debug('💾 Brain saved');
+      // تحقق من وجود logger قبل الاستخدام
+      if (this.robot && this.robot.logger) {
+        this.robot.logger.debug('💾 Brain saved');
+      }
     } catch (error) {
-      this.robot.logger.error(`Error saving brain: ${error}`);
+      if (this.robot && this.robot.logger) {
+        this.robot.logger.error(`Error saving brain: ${error}`);
+      } else {
+        console.error(`Error saving brain: ${error}`);
+      }
     }
   }
 
@@ -45,12 +58,27 @@ class Brain extends EventEmitter {
       try {
         const data = fs.readFileSync(this.savePath, 'utf-8');
         this.data = JSON.parse(data);
-        this.robot.logger.info('🧠 Brain loaded');
+        
+        if (this.robot && this.robot.logger) {
+          this.robot.logger.info('🧠 Brain loaded');
+        } else {
+          console.log('🧠 Brain loaded');
+        }
       } catch (error) {
-        this.robot.logger.error(`Error loading brain: ${error}`);
+        if (this.robot && this.robot.logger) {
+          this.robot.logger.error(`Error loading brain: ${error}`);
+        } else {
+          console.error(`Error loading brain: ${error}`);
+        }
+        // تهيئة بيانات فارغة في حالة الخطأ
+        this.data = { users: {}, _private: {} };
       }
     } else {
-      this.robot.logger.info('🧠 Brain initialized (no saved data)');
+      if (this.robot && this.robot.logger) {
+        this.robot.logger.info('🧠 Brain initialized (no saved data)');
+      } else {
+        console.log('🧠 Brain initialized (no saved data)');
+      }
     }
   }
 
